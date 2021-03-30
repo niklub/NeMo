@@ -16,7 +16,6 @@
 from typing import Callable, List, Optional, Tuple
 
 import torch
-from torch._C import device
 import torch.nn as nn
 from torch import Tensor
 
@@ -96,7 +95,7 @@ class StatsPoolLayer(nn.Module):
 
 
 class AttentivePoolingLayer(nn.Module):
-    def __init__(self,input_channels,attention_channels,global_context=True):
+    def __init__(self,input_channels,attention_channels,global_context=True,init_mode='xavier_uniform'):
         super().__init__()
         self.global_context = global_context
         self.feat_in = 2*input_channels
@@ -109,6 +108,8 @@ class AttentivePoolingLayer(nn.Module):
         self.channel_activation = nn.ReLU()
         self.norm = nn.BatchNorm1d(attention_channels)
         self.scalar_attn = nn.Conv1d(attention_channels,input_channels,kernel_size=1,dilation=1)
+
+        self.apply(lambda x: init_weights(x, mode=init_mode))
     
     def compute_stats(self,x,m,dim=2):
         eps = 1e-12
@@ -141,7 +142,7 @@ class AttentivePoolingLayer(nn.Module):
         attn = self.scalar_attn(self.linear_activation(scaler_score))
 
         # Filter out zero-paddings
-        attn = attn.masked_fill(mask == 0, float("-inf"))
+        # attn = attn.masked_fill(mask == 0, float("-inf"))
 
         attn = nn.functional.softmax(attn, dim=2)
         mean, std = self.compute_stats(x, attn)

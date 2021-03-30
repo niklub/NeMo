@@ -21,10 +21,10 @@ import torch.nn.functional as F
 from omegaconf import MISSING, ListConfig, OmegaConf
 
 from nemo.collections.asr.parts.jasper import (
+    AttentivePoolingLayer,
     JasperBlock,
     MaskedConv1d,
     StatsPoolLayer,
-    AttentivePoolingLayer,
     init_weights,
     jasper_activations,
 )
@@ -400,7 +400,7 @@ class SpeakerDecoder(NeuralModule, Exportable):
         if self.pool_mode == 'xvector' or self.pool_mode == 'tap':
             self._pooling = StatsPoolLayer(feat_in=feat_in, pool_mode=pool_mode)
         elif self.pool_mode == 'ecapa':
-            self._pooling = AttentivePoolingLayer(input_channels=feat_in,attention_channels=128,global_context=True)
+            self._pooling = AttentivePoolingLayer(input_channels=feat_in, attention_channels=128, global_context=False)
 
         self._feat_in = self._pooling.feat_in
 
