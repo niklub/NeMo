@@ -16,6 +16,7 @@
 from typing import Callable, List, Optional, Tuple
 
 import torch
+from torch._C import device
 import torch.nn as nn
 from torch import Tensor
 
@@ -79,48 +80,75 @@ def get_same_padding(kernel_size, stride, dilation):
 class StatsPoolLayer(nn.Module):
     def __init__(self, feat_in, pool_mode='xvector'):
         super().__init__()
-        self.feat_in = 0
-        if pool_mode == 'gram':
-            gram = True
-            super_vector = False
-        elif pool_mode == 'superVector':
-            gram = True
-            super_vector = True
+        self.pool_mode = pool_mode
+        self.feat_in = feat_in
+        if self.pool_mode == 'xvector':
+            self.feat_in += feat_in
+
+    def forward(self, x):
+        mean = x.mean(dim=-1)  # Time Axis
+        if self.pool_mode == 'xvector':
+            std = x.std(dim=-1)
+            pooled = torch.cat([mean, std], dim=-1)
         else:
-            gram = False
-            super_vector = False
-
-        if gram:
-            self.feat_in += feat_in ** 2
-        else:
-            self.feat_in += 2 * feat_in
-
-        if super_vector and gram:
-            self.feat_in += 2 * feat_in
-
-        self.gram = gram
-        self.super = super_vector
-
-    def forward(self, encoder_output):
-
-        mean = encoder_output.mean(dim=-1)  # Time Axis
-        std = encoder_output.std(dim=-1)
-
-        pooled = torch.cat([mean, std], dim=-1)
-
-        if self.gram:
-            time_len = encoder_output.shape[-1]
-            # encoder_output = encoder_output
-            cov = encoder_output.bmm(encoder_output.transpose(2, 1))  # cov matrix
-            cov = cov.view(cov.shape[0], -1) / time_len
-
-        if self.gram and not self.super:
-            return cov
-
-        if self.super and self.gram:
-            pooled = torch.cat([pooled, cov], dim=-1)
-
+            pooled = mean
         return pooled
+
+
+class AttentivePoolingLayer(nn.Module):
+    def __init__(self,input_channels,attention_channels,global_context=True):
+        super().__init__()
+        self.global_context = global_context
+        self.feat_in = 2*input_channels
+        if self.global_context:
+            self.channel_attn = nn.Conv1d(3*input_channels,attention_channels,kernel_size=1,dilation=1)
+        else:
+            self.channel_attn = nn.Conv1d(input_channels,attention_channels,kernel_size=1,dilation=1)
+        
+        self.linear_activation = nn.Tanh()
+        self.channel_activation = nn.ReLU()
+        self.norm = nn.BatchNorm1d(attention_channels)
+        self.scalar_attn = nn.Conv1d(attention_channels,input_channels,kernel_size=1,dilation=1)
+    
+    def compute_stats(self,x,m,dim=2):
+        eps = 1e-12
+        mean = (m * x).sum(dim)
+        std = torch.sqrt(
+                (m * (x - mean.unsqueeze(dim)).pow(2)).sum(dim).clamp(eps)
+            )
+        return mean, std
+    
+    def forward(self,x,lengths=None):
+
+        T = x.shape[-1]
+        if lengths is None:
+            lengths = torch.ones(x.shape[0],device=x.device)
+        
+        mask = torch.arange(T,device=x.device).expand(len(lengths), T) < lengths.unsqueeze(1) # Nx1
+        mask = torch.as_tensor(mask).unsqueeze(1) # Nx1xT
+
+        if self.global_context:
+            total = mask.sum(dim=2, keepdim=True).float()
+            mean, std = self.compute_stats(x, mask / total)
+            mean = mean.unsqueeze(2).repeat(1, 1, T)
+            std = std.unsqueeze(2).repeat(1, 1, T)
+            attn = torch.cat([x, mean, std], dim=1)
+        else:
+            attn = x
+        
+        scaler_score = self.norm(self.channel_activation(self.channel_attn(attn)))
+        
+        attn = self.scalar_attn(self.linear_activation(scaler_score))
+
+        # Filter out zero-paddings
+        attn = attn.masked_fill(mask == 0, float("-inf"))
+
+        attn = nn.functional.softmax(attn, dim=2)
+        mean, std = self.compute_stats(x, attn)
+        # Append mean and std of the batch
+        pooled_stats = torch.cat((mean, std), dim=1)
+
+        return pooled_stats
 
 
 class MaskedConv1d(nn.Module):
